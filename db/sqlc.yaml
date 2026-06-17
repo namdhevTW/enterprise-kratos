@@ -1,0 +1,21 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "queries/tenants.sql"
+    schema: "migrations/00001_init_schema.sql"
+    gen:
+      go:
+        package: "tenant"
+        out: "../internal/tenant"
+        out_file_suffix: "_gen"
+        emit_interface: false
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_prepared_queries: false
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        overrides:
+          - db_type: "uuid"
+            go_type: "github.com/google/uuid.UUID"
+          - db_type: "pg_catalog.text"
+            go_type: "string"
