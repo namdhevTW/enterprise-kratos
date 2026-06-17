@@ -17,8 +17,10 @@ import (
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
 	"github.com/enterprise-idp/idpd/internal/flow/login"
+	"github.com/enterprise-idp/idpd/internal/hydra"
 	"github.com/enterprise-idp/idpd/internal/identity"
 	"github.com/enterprise-idp/idpd/internal/policy"
+	"github.com/enterprise-idp/idpd/internal/session"
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 )
 
@@ -82,12 +84,25 @@ func main() {
 	flowStore := flow.NewStore(pool)
 	policyStore := policy.NewStore(pool)
 	identityStore := identity.NewStore(pool)
+	sessionStore := session.NewStore(pool)
 
 	// -------------------------------------------------------------------------
-	// Flow engines
+	// Hydra client (optional — only wired when HYDRA_ADMIN_URL is set)
+	// -------------------------------------------------------------------------
+	var hydraClient *hydra.Client
+	if hydraAdminURL := os.Getenv("HYDRA_ADMIN_URL"); hydraAdminURL != "" {
+		hydraClient = hydra.NewClient(hydraAdminURL, nil)
+		slog.Info("hydra integration enabled", "admin_url", hydraAdminURL)
+	} else {
+		slog.Info("hydra integration disabled (HYDRA_ADMIN_URL not set)")
+	}
+
+	// -------------------------------------------------------------------------
+	// Flow engines + session handler
 	// -------------------------------------------------------------------------
 	loginEngine := login.New(flowStore, policyStore, identityStore, authnReg)
-	loginHandler := login.NewHandler(loginEngine)
+	loginHandler := login.NewHandler(loginEngine, sessionStore, hydraClient)
+	sessionHandler := session.NewHandler(sessionStore)
 
 	// -------------------------------------------------------------------------
 	// Router
@@ -111,6 +126,7 @@ func main() {
 	r.Route("/t/{tenant-slug}", func(r chi.Router) {
 		r.Use(tenantResolver.Handler)
 		loginHandler.Mount(r)
+		sessionHandler.Mount(r)
 	})
 
 	// -------------------------------------------------------------------------

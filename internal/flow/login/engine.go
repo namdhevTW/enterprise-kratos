@@ -37,10 +37,11 @@ func New(flows *flow.Store, policies *policy.Store, identities *identity.Store, 
 // SubmitResult is returned by SubmitFlow when credentials are accepted.
 type SubmitResult struct {
 	Flow       *flow.Flow
-	Completed  bool       // true when all AAL requirements are satisfied
-	IdentityID uuid.UUID  // set when Completed = true
-	AAL        string     // "aal1" or "aal2"
-	AMR        []string   // authentication method references
+	Completed  bool          // true when all AAL requirements are satisfied
+	IdentityID uuid.UUID     // set when Completed = true
+	AAL        string        // "aal1" or "aal2"
+	AMR        []string      // authentication method references
+	SessionTTL time.Duration // parsed from tenant session policy; valid only when Completed = true
 }
 
 // InitFlow creates a new pending login flow for the tenant. It assembles UI
@@ -224,6 +225,7 @@ func (e *Engine) submitFirstFactor(ctx context.Context, f *flow.Flow, pol *polic
 		IdentityID: cred.IdentityID,
 		AAL:        "aal1",
 		AMR:        result.AMR,
+		SessionTTL: parseSessionTTL(pol),
 	}, nil
 }
 
@@ -339,7 +341,16 @@ func (e *Engine) submitSecondFactor(ctx context.Context, f *flow.Flow, pol *poli
 		IdentityID: *f.IdentityID,
 		AAL:        "aal2",
 		AMR:        amr,
+		SessionTTL: parseSessionTTL(pol),
 	}, nil
+}
+
+func parseSessionTTL(pol *policy.FlowPolicy) time.Duration {
+	d, err := time.ParseDuration(pol.Session.TTL)
+	if err != nil || d <= 0 {
+		return 24 * time.Hour
+	}
+	return d
 }
 
 // appendFlowError persists an error message to the flow's UI and keeps it pending.

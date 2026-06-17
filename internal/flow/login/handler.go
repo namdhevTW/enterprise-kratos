@@ -8,6 +8,8 @@ import (
 
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	"github.com/enterprise-idp/idpd/internal/flow"
+	"github.com/enterprise-idp/idpd/internal/hydra"
+	"github.com/enterprise-idp/idpd/internal/session"
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,12 +17,15 @@ import (
 
 // Handler exposes the login Engine over HTTP.
 type Handler struct {
-	engine *Engine
+	engine   *Engine
+	sessions *session.Store
+	hydra    *hydra.Client // nil when Hydra integration is not configured
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine) *Handler {
-	return &Handler{engine: engine}
+// hydraClient may be nil when the Hydra integration is not configured.
+func NewHandler(engine *Engine, sessions *session.Store, hydraClient *hydra.Client) *Handler {
+	return &Handler{engine: engine, sessions: sessions, hydra: hydraClient}
 }
 
 // Mount registers login flow routes onto r.
@@ -126,12 +131,31 @@ func (h *Handler) submitFlow(w http.ResponseWriter, r *http.Request) {
 	result.Flow.UI.Action = actionURL(t.Slug, result.Flow.ID)
 
 	if result.Completed {
-		// Session issuance (step 4) will replace this response.
+		sess, sErr := h.sessions.Create(r.Context(), t.ID, result.IdentityID, result.AAL, result.AMR, result.SessionTTL)
+		if sErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errBody("failed to create session"))
+			return
+		}
+
+		// If a Hydra login_challenge is present, accept it and redirect.
+		if challenge := r.URL.Query().Get("login_challenge"); challenge != "" && h.hydra != nil {
+			redirectTo, hErr := h.hydra.AcceptLoginRequest(r.Context(), challenge, result.IdentityID, t.ID, result.AAL, false)
+			if hErr != nil {
+				writeJSON(w, http.StatusInternalServerError, errBody("hydra accept failed"))
+				return
+			}
+			w.Header().Set("X-Session-Token", sess.Token)
+			http.Redirect(w, r, redirectTo, http.StatusFound)
+			return
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"flow":        toResponse(result.Flow),
-			"identity_id": result.IdentityID,
-			"aal":         result.AAL,
-			"amr":         result.AMR,
+			"session_token": sess.Token,
+			"session_id":    sess.ID,
+			"identity_id":   result.IdentityID,
+			"aal":           result.AAL,
+			"amr":           result.AMR,
+			"expires_at":    sess.ExpiresAt,
 		})
 		return
 	}
