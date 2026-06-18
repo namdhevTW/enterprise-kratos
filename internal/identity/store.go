@@ -11,8 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrNotFound is returned when no credential matches the query.
+// ErrNotFound is returned when no identity or credential matches the query.
 var ErrNotFound = errors.New("credential not found")
+
+const (
+	StateActive              = "active"
+	StatePendingVerification = "pending_verification"
+)
+
+// Identity represents a row in the identities table.
+type Identity struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+	SchemaID uuid.UUID
+	Traits   json.RawMessage
+	State    string
+}
 
 // Credential represents a row in identity_credentials.
 type Credential struct {
@@ -102,4 +116,56 @@ func (s *Store) CreateCredential(ctx context.Context, tenantID, identityID uuid.
 		return nil, fmt.Errorf("identity.CreateCredential decode config: %w", err)
 	}
 	return &c, nil
+}
+
+// CreateIdentity inserts a new identity row and returns it.
+func (s *Store) CreateIdentity(ctx context.Context, tenantID, schemaID uuid.UUID, traits json.RawMessage, state string) (*Identity, error) {
+	var ident Identity
+	var traitsRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO identities (tenant_id, schema_id, traits, state)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, tenant_id, schema_id, traits, state
+	`, tenantID, schemaID, []byte(traits), state).
+		Scan(&ident.ID, &ident.TenantID, &ident.SchemaID, &traitsRaw, &ident.State)
+	if err != nil {
+		return nil, fmt.Errorf("identity.CreateIdentity tenant=%s: %w", tenantID, err)
+	}
+	ident.Traits = json.RawMessage(traitsRaw)
+	return &ident, nil
+}
+
+// GetIdentity returns an identity by tenant + id. Returns ErrNotFound (wrapped) when absent.
+func (s *Store) GetIdentity(ctx context.Context, tenantID, identityID uuid.UUID) (*Identity, error) {
+	var ident Identity
+	var traitsRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, tenant_id, schema_id, traits, state
+		FROM identities
+		WHERE tenant_id = $1 AND id = $2
+	`, tenantID, identityID).
+		Scan(&ident.ID, &ident.TenantID, &ident.SchemaID, &traitsRaw, &ident.State)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("identity.GetIdentity %s: %w", identityID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("identity.GetIdentity tenant=%s id=%s: %w", tenantID, identityID, err)
+	}
+	ident.Traits = json.RawMessage(traitsRaw)
+	return &ident, nil
+}
+
+// UpdateIdentityState changes the state column of an identity.
+func (s *Store) UpdateIdentityState(ctx context.Context, tenantID, identityID uuid.UUID, state string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE identities SET state = $3 WHERE tenant_id = $1 AND id = $2`,
+		tenantID, identityID, state,
+	)
+	if err != nil {
+		return fmt.Errorf("identity.UpdateIdentityState tenant=%s id=%s: %w", tenantID, identityID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("identity.UpdateIdentityState %s: %w", identityID, ErrNotFound)
+	}
+	return nil
 }

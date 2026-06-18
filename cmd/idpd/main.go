@@ -17,9 +17,12 @@ import (
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
 	"github.com/enterprise-idp/idpd/internal/flow/login"
+	"github.com/enterprise-idp/idpd/internal/flow/registration"
+	"github.com/enterprise-idp/idpd/internal/flow/verification"
 	"github.com/enterprise-idp/idpd/internal/hydra"
 	"github.com/enterprise-idp/idpd/internal/identity"
 	"github.com/enterprise-idp/idpd/internal/policy"
+	"github.com/enterprise-idp/idpd/internal/schema"
 	"github.com/enterprise-idp/idpd/internal/session"
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 )
@@ -84,6 +87,7 @@ func main() {
 	flowStore := flow.NewStore(pool)
 	policyStore := policy.NewStore(pool)
 	identityStore := identity.NewStore(pool)
+	schemaStore := schema.NewStore(pool)
 	sessionStore := session.NewStore(pool)
 
 	// -------------------------------------------------------------------------
@@ -98,10 +102,17 @@ func main() {
 	}
 
 	// -------------------------------------------------------------------------
-	// Flow engines + session handler
+	// Flow engines + handlers
 	// -------------------------------------------------------------------------
 	loginEngine := login.New(flowStore, policyStore, identityStore, authnReg)
 	loginHandler := login.NewHandler(loginEngine, sessionStore, hydraClient)
+
+	verificationEngine := verification.New(flowStore, identityStore)
+	verificationHandler := verification.NewHandler(verificationEngine)
+
+	registrationEngine := registration.New(flowStore, policyStore, identityStore, schemaStore, authnReg, verificationEngine)
+	registrationHandler := registration.NewHandler(registrationEngine, sessionStore)
+
 	sessionHandler := session.NewHandler(sessionStore)
 
 	// -------------------------------------------------------------------------
@@ -126,6 +137,8 @@ func main() {
 	r.Route("/t/{tenant-slug}", func(r chi.Router) {
 		r.Use(tenantResolver.Handler)
 		loginHandler.Mount(r)
+		registrationHandler.Mount(r)
+		verificationHandler.Mount(r)
 		sessionHandler.Mount(r)
 	})
 

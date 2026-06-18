@@ -42,13 +42,16 @@ type UI struct {
 
 // UIInternal is the server-side state stored inside the UI JSONB blob.
 type UIInternal struct {
-	// Phase is "first_factor", "second_factor", or "complete".
+	// Phase is "first_factor", "second_factor", "register", "complete", or "verify".
 	Phase string `json:"phase"`
 	// AuthnStates maps authenticator ID → opaque state from StartFlow.
 	// Used to pass context back to the authenticator on CompleteFlow.
 	AuthnStates  map[string]string `json:"authn_states,omitempty"`
 	CompletedAAL string            `json:"completed_aal,omitempty"` // "" | "aal1"
 	CompletedAMR []string          `json:"completed_amr,omitempty"`
+	// VerificationToken is the plaintext single-use token for verification flows.
+	// It is never sent to clients — the handler strips UIInternal before responding.
+	VerificationToken string `json:"verification_token,omitempty"`
 }
 
 // Flow represents a row in self_service_flows.
