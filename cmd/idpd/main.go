@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	oidcadapter "github.com/enterprise-idp/idpd/internal/authenticator/adapters/oidc"
 	"github.com/enterprise-idp/idpd/internal/authenticator/adapters/password"
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
@@ -21,9 +22,11 @@ import (
 	"github.com/enterprise-idp/idpd/internal/flow/verification"
 	"github.com/enterprise-idp/idpd/internal/hydra"
 	"github.com/enterprise-idp/idpd/internal/identity"
+	idpoidc "github.com/enterprise-idp/idpd/internal/oidc"
 	"github.com/enterprise-idp/idpd/internal/policy"
 	"github.com/enterprise-idp/idpd/internal/schema"
 	"github.com/enterprise-idp/idpd/internal/session"
+	"github.com/enterprise-idp/idpd/internal/sso"
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 )
 
@@ -70,16 +73,6 @@ func main() {
 	slog.Info("database connection established")
 
 	// -------------------------------------------------------------------------
-	// Authenticator registry
-	// -------------------------------------------------------------------------
-	authnReg := authnregistry.New()
-	authnReg.MustRegister(password.New())
-	// REST adapters (TOTP, PassKey, OTP) are registered here when their
-	// base URLs are available from config. Example:
-	//   authnReg.MustRegister(rest.New("totp", authenticator.SecondFactor, os.Getenv("TOTP_SERVICE_URL"), nil))
-	slog.Info("authenticator registry ready", "count", len(authnReg.All()))
-
-	// -------------------------------------------------------------------------
 	// Stores
 	// -------------------------------------------------------------------------
 	tenantStore := internaltenant.NewStore(pool)
@@ -89,6 +82,20 @@ func main() {
 	identityStore := identity.NewStore(pool)
 	schemaStore := schema.NewStore(pool)
 	sessionStore := session.NewStore(pool)
+	ssoStore := sso.NewStore(pool)
+
+	// -------------------------------------------------------------------------
+	// Authenticator registry
+	// ssoStore is initialised first so the OIDC adapter can look up per-tenant
+	// providers at StartFlow time.
+	// -------------------------------------------------------------------------
+	authnReg := authnregistry.New()
+	authnReg.MustRegister(password.New())
+	authnReg.MustRegister(oidcadapter.New(ssoStore))
+	// REST adapters (TOTP, PassKey, OTP) are registered here when their
+	// base URLs are available from config. Example:
+	//   authnReg.MustRegister(rest.New("totp", authenticator.SecondFactor, os.Getenv("TOTP_SERVICE_URL"), nil))
+	slog.Info("authenticator registry ready", "count", len(authnReg.All()))
 
 	// -------------------------------------------------------------------------
 	// Hydra client (optional — only wired when HYDRA_ADMIN_URL is set)
@@ -115,6 +122,11 @@ func main() {
 
 	sessionHandler := session.NewHandler(sessionStore)
 
+	ssoHandler := sso.NewHandler(ssoStore)
+
+	oidcEngine := idpoidc.New(ssoStore, flowStore, identityStore, schemaStore, sessionStore, policyStore)
+	oidcHandler := idpoidc.NewHandler(oidcEngine)
+
 	// -------------------------------------------------------------------------
 	// Router
 	// -------------------------------------------------------------------------
@@ -140,6 +152,8 @@ func main() {
 		registrationHandler.Mount(r)
 		verificationHandler.Mount(r)
 		sessionHandler.Mount(r)
+		ssoHandler.Mount(r)
+		oidcHandler.Mount(r)
 	})
 
 	// -------------------------------------------------------------------------

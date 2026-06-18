@@ -52,6 +52,10 @@ type UIInternal struct {
 	// VerificationToken is the plaintext single-use token for verification flows.
 	// It is never sent to clients — the handler strips UIInternal before responding.
 	VerificationToken string `json:"verification_token,omitempty"`
+	// OIDC-specific fields — populated during OIDC initiation, cleared after callback.
+	OIDCProviderID   string `json:"oidc_provider_id,omitempty"`
+	OIDCNonce        string `json:"oidc_nonce,omitempty"`
+	OIDCCodeVerifier string `json:"oidc_code_verifier,omitempty"` // PKCE S256 verifier
 }
 
 // Flow represents a row in self_service_flows.
