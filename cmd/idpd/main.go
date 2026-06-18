@@ -18,7 +18,9 @@ import (
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
 	"github.com/enterprise-idp/idpd/internal/flow/login"
+	"github.com/enterprise-idp/idpd/internal/flow/recovery"
 	"github.com/enterprise-idp/idpd/internal/flow/registration"
+	"github.com/enterprise-idp/idpd/internal/flow/settings"
 	"github.com/enterprise-idp/idpd/internal/flow/verification"
 	"github.com/enterprise-idp/idpd/internal/hydra"
 	"github.com/enterprise-idp/idpd/internal/identity"
@@ -127,6 +129,12 @@ func main() {
 	oidcEngine := idpoidc.New(ssoStore, flowStore, identityStore, schemaStore, sessionStore, policyStore)
 	oidcHandler := idpoidc.NewHandler(oidcEngine)
 
+	recoveryEngine := recovery.New(flowStore, policyStore, identityStore, sessionStore)
+	recoveryHandler := recovery.NewHandler(recoveryEngine)
+
+	settingsEngine := settings.New(flowStore, identityStore, authnReg)
+	settingsHandler := settings.NewHandler(settingsEngine, sessionStore)
+
 	// -------------------------------------------------------------------------
 	// Router
 	// -------------------------------------------------------------------------
@@ -154,6 +162,8 @@ func main() {
 		sessionHandler.Mount(r)
 		ssoHandler.Mount(r)
 		oidcHandler.Mount(r)
+		recoveryHandler.Mount(r)
+		settingsHandler.Mount(r)
 	})
 
 	// -------------------------------------------------------------------------

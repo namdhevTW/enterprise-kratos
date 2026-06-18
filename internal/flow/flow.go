@@ -56,6 +56,9 @@ type UIInternal struct {
 	OIDCProviderID   string `json:"oidc_provider_id,omitempty"`
 	OIDCNonce        string `json:"oidc_nonce,omitempty"`
 	OIDCCodeVerifier string `json:"oidc_code_verifier,omitempty"` // PKCE S256 verifier
+	// Recovery-specific fields — set after the identifier is submitted.
+	RecoveryToken      string `json:"recovery_token,omitempty"`
+	RecoveryIdentityID string `json:"recovery_identity_id,omitempty"`
 }
 
 // Flow represents a row in self_service_flows.

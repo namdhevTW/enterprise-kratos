@@ -169,3 +169,54 @@ func (s *Store) UpdateIdentityState(ctx context.Context, tenantID, identityID uu
 	}
 	return nil
 }
+
+// GetIdentityIDByIdentifier finds the identity that owns a credential with the
+// given identifier value, regardless of credential type. Used by the recovery
+// flow to locate an account by email across all credential types.
+func (s *Store) GetIdentityIDByIdentifier(ctx context.Context, tenantID uuid.UUID, identifier string) (uuid.UUID, error) {
+	var identityID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT identity_id FROM identity_credentials
+		WHERE tenant_id = $1 AND $2 = ANY(identifiers)
+		LIMIT 1
+	`, tenantID, identifier).Scan(&identityID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, fmt.Errorf("identity.GetIdentityIDByIdentifier %q: %w", identifier, ErrNotFound)
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("identity.GetIdentityIDByIdentifier tenant=%s: %w", tenantID, err)
+	}
+	return identityID, nil
+}
+
+// UpdateTraits replaces the traits JSONB for an identity.
+func (s *Store) UpdateTraits(ctx context.Context, tenantID, identityID uuid.UUID, traits json.RawMessage) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE identities SET traits = $3 WHERE tenant_id = $1 AND id = $2`,
+		tenantID, identityID, []byte(traits),
+	)
+	if err != nil {
+		return fmt.Errorf("identity.UpdateTraits tenant=%s id=%s: %w", tenantID, identityID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("identity.UpdateTraits %s: %w", identityID, ErrNotFound)
+	}
+	return nil
+}
+
+// UpsertCredential inserts a new credential or replaces the config and
+// identifiers of an existing one (matched by tenant+identity+type).
+func (s *Store) UpsertCredential(ctx context.Context, tenantID, identityID uuid.UUID, credType string, identifiers []string, config json.RawMessage) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO identity_credentials (tenant_id, identity_id, type, identifiers, config)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, type, identifiers) DO UPDATE
+		  SET config = EXCLUDED.config,
+		      identifiers = EXCLUDED.identifiers
+	`, tenantID, identityID, credType, identifiers, []byte(config))
+	if err != nil {
+		return fmt.Errorf("identity.UpsertCredential tenant=%s identity=%s type=%s: %w",
+			tenantID, identityID, credType, err)
+	}
+	return nil
+}
