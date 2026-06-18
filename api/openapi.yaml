@@ -1,0 +1,1443 @@
+openapi: 3.1.0
+
+info:
+  title: Enterprise IDP API
+  version: 0.1.0
+  description: |
+    Multi-tenant Identity Provider with full Ory Kratos-compatible self-service
+    flows, per-tenant OIDC/SAML SSO, and an Ory Hydra OAuth2 bridge.
+
+    ## Tenant routing
+    All self-service and admin routes are scoped under `/t/{tenant-slug}`.
+    The tenant is resolved by the path prefix; every endpoint within that
+    prefix operates in complete isolation from other tenants.
+
+    ## Authentication
+    Protected endpoints require a session token delivered as either:
+    - `X-Session-Token: <token>` header, or
+    - `Authorization: Bearer <token>` header
+
+    Session tokens are issued by login, registration (when verification is not
+    required), and the OIDC callback.
+
+    ## Self-service flow pattern
+    Every self-service flow follows the same three-step pattern:
+    1. **Init** – `POST /self-service/<flow>/flows` → returns a flow with UI nodes
+    2. **Get** – `GET /self-service/<flow>/flows/{flowId}` → refresh or poll state
+    3. **Submit** – `POST /self-service/<flow>/flows/{flowId}` → advance or complete
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: health
+    description: Service health
+  - name: login
+    description: Login self-service flow
+  - name: registration
+    description: Registration self-service flow
+  - name: verification
+    description: Email verification self-service flow
+  - name: recovery
+    description: Account recovery self-service flow
+  - name: settings
+    description: Profile and credential settings (requires authentication)
+  - name: sessions
+    description: Session introspection and revocation
+  - name: oidc
+    description: OIDC redirect and callback
+  - name: sso-admin
+    description: |
+      SSO provider management (admin — must be protected by an auth layer in production)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security
+# ─────────────────────────────────────────────────────────────────────────────
+
+security: []  # default: unauthenticated; individual operations override
+
+components:
+  securitySchemes:
+    sessionToken:
+      type: apiKey
+      in: header
+      name: X-Session-Token
+      description: Session token issued on successful authentication.
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: Same session token delivered as a Bearer token.
+
+  parameters:
+    tenantSlug:
+      name: tenant-slug
+      in: path
+      required: true
+      schema:
+        type: string
+        example: my-team
+      description: URL slug that identifies the tenant.
+
+    flowId:
+      name: flowId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Self-service flow ID.
+
+    providerId:
+      name: providerId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: SSO provider ID.
+
+  schemas:
+
+    # ── Error ──────────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: flow not found
+
+    # ── UI primitives ──────────────────────────────────────────────────────
+
+    UIMessage:
+      type: object
+      required: [id, type, text]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Numeric message ID (Kratos-compatible).
+          example: 4000006
+        type:
+          type: string
+          enum: [info, error, success]
+        text:
+          type: string
+          example: The provided credentials are invalid.
+
+    UINodeAttrs:
+      type: object
+      properties:
+        name:
+          type: string
+          example: password
+        type:
+          type: string
+          enum: [text, email, password, hidden, submit, checkbox]
+          example: password
+        value:
+          description: Pre-filled or fixed value (any scalar).
+        required:
+          type: boolean
+        disabled:
+          type: boolean
+
+    UINodeMeta:
+      type: object
+      properties:
+        label:
+          $ref: '#/components/schemas/UIMessage'
+
+    UINode:
+      type: object
+      required: [type, group, attributes, meta]
+      properties:
+        type:
+          type: string
+          enum: [input, button, img, text, anchor]
+        group:
+          type: string
+          enum: [default, password, totp, oidc, passkey, otp]
+          description: Logical group that the node belongs to.
+        attributes:
+          $ref: '#/components/schemas/UINodeAttrs'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/UIMessage'
+        meta:
+          $ref: '#/components/schemas/UINodeMeta'
+
+    FlowUI:
+      type: object
+      required: [action, method, nodes]
+      description: |
+        Kratos-compatible UI blob. The `_internal` field is stored server-side
+        and is never included in API responses.
+      properties:
+        action:
+          type: string
+          description: URL to POST the flow submission to.
+          example: /t/my-team/self-service/login/flows/3fa85f64-5717-4562-b3fc-2c963f66afa6
+        method:
+          type: string
+          enum: [POST]
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/UINode'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/UIMessage'
+
+    FlowResponse:
+      type: object
+      required: [id, type, state, ui]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [login, registration, recovery, settings, verification]
+        state:
+          type: string
+          enum: [pending, success, failed, expired]
+        ui:
+          $ref: '#/components/schemas/FlowUI'
+
+    # ── Session ────────────────────────────────────────────────────────────
+
+    SessionCreated:
+      type: object
+      required: [session_token, session_id, identity_id, aal, expires_at]
+      description: Issued when authentication completes successfully.
+      properties:
+        session_token:
+          type: string
+          description: Opaque bearer token — include in subsequent requests.
+          example: zX3kP9Qr2...
+        session_id:
+          type: string
+          format: uuid
+        identity_id:
+          type: string
+          format: uuid
+        aal:
+          type: string
+          enum: [aal1, aal2]
+          description: Authenticator assurance level reached.
+        amr:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Authentication method references (e.g. ["pwd"], ["oidc"], ["pwd","totp"]).
+          example: [pwd]
+        expires_at:
+          type: string
+          format: date-time
+
+    SessionInfo:
+      type: object
+      required: [id, identity_id, tenant_id, aal, expires_at, active]
+      properties:
+        id:
+          type: string
+          format: uuid
+        identity_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        aal:
+          type: string
+          enum: [aal1, aal2]
+        amr:
+          type: array
+          items:
+            type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+
+    # ── SSO providers ──────────────────────────────────────────────────────
+
+    OIDCProviderConfig:
+      type: object
+      required: [client_id, client_secret, issuer_url, redirect_uri]
+      properties:
+        client_id:
+          type: string
+          example: 123456789.apps.googleusercontent.com
+        client_secret:
+          type: string
+          description: Stored server-side; never returned in list/get responses.
+          example: GOCSPX-...
+        issuer_url:
+          type: string
+          format: uri
+          description: OIDC discovery base URL (discovery doc at {issuer}/.well-known/openid-configuration).
+          example: https://accounts.google.com
+        redirect_uri:
+          type: string
+          format: uri
+          description: Must be registered with the OIDC provider. Typically /t/{slug}/self-service/login/flows/oidc/callback.
+          example: https://idp.example.com/t/my-team/self-service/login/flows/oidc/callback
+        scopes:
+          type: array
+          items:
+            type: string
+          description: OAuth2 scopes to request. Defaults to [openid, email, profile].
+          example: [openid, email, profile]
+
+    SAMLProviderConfig:
+      type: object
+      required: [metadata_url, sp_id]
+      properties:
+        metadata_url:
+          type: string
+          format: uri
+          description: URL of the IdP SAML metadata XML document.
+          example: https://login.microsoftonline.com/tenant-id/federationmetadata/2007-06/federationmetadata.xml
+        sp_id:
+          type: string
+          description: Our entity ID (Service Provider).
+          example: https://idp.example.com/t/my-team/saml/sp
+        name_id_format:
+          type: string
+          description: SAML NameID format.
+          example: urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress
+
+    SSOProviderCreate:
+      type: object
+      required: [type, provider, config]
+      properties:
+        type:
+          type: string
+          enum: [oidc, saml]
+        provider:
+          type: string
+          enum: [google, azure, okta, custom]
+          example: google
+        config:
+          description: |
+            Type-specific configuration object.
+            - For `type=oidc`: see OIDCProviderConfig schema.
+            - For `type=saml`: see SAMLProviderConfig schema.
+          oneOf:
+            - $ref: '#/components/schemas/OIDCProviderConfig'
+            - $ref: '#/components/schemas/SAMLProviderConfig'
+
+    SSOProvider:
+      type: object
+      required: [id, type, provider, enabled]
+      description: |
+        SSO provider summary. The `config` field (which contains client secrets)
+        is intentionally omitted from all read responses.
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [oidc, saml]
+        provider:
+          type: string
+          example: google
+        enabled:
+          type: boolean
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Service health check
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+
+  # ── Login ─────────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/login/flows:
+    post:
+      operationId: initLoginFlow
+      tags: [login]
+      summary: Initialise a login flow
+      description: |
+        Creates a pending login flow and returns the UI nodes for all
+        first-factor methods enabled in the tenant's flow policy.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Login flow initialised.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '401':
+          description: Tenant not resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/self-service/login/flows/{flowId}:
+    get:
+      operationId: getLoginFlow
+      tags: [login]
+      summary: Get a login flow
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      responses:
+        '200':
+          description: Login flow returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '400':
+          description: Invalid flow ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: submitLoginFlow
+      tags: [login]
+      summary: Submit login credentials
+      description: |
+        Submits credentials for the specified method. On success the response
+        is one of:
+
+        - **Completed** (`session_token` present) — all AAL requirements met,
+          a session is issued.
+        - **Advanced** (flow response returned) — the flow moved to the next
+          phase (e.g. second factor). Re-fetch the flow and submit again.
+        - **Redirect** (HTTP 302 with `X-Session-Token` header) — only when
+          the `login_challenge` query parameter is set and the server is
+          configured with `HYDRA_ADMIN_URL`. The browser is redirected to the
+          Hydra consent URL.
+
+        ### Password login
+        ```json
+        {"method": "password", "identifier": "alice@example.com", "password": "s3cret"}
+        ```
+
+        ### TOTP second factor
+        ```json
+        {"method": "totp", "totp_code": "123456"}
+        ```
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+        - name: login_challenge
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            Ory Hydra login challenge. When present and `HYDRA_ADMIN_URL` is
+            configured, the server accepts the Hydra request and returns an
+            HTTP 302 redirect instead of a JSON session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  type: string
+                  example: password
+                  description: Authenticator ID (password, totp, otp, passkey, oidc).
+                identifier:
+                  type: string
+                  example: alice@example.com
+                  description: Required for first-factor methods.
+                password:
+                  type: string
+                  format: password
+                  description: Required when method=password.
+                totp_code:
+                  type: string
+                  description: Required when method=totp.
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: |
+            Flow completed (session issued) or advanced (more factors required).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionCreated'
+                  - $ref: '#/components/schemas/FlowResponse'
+        '302':
+          description: Hydra redirect (only when login_challenge is set).
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            X-Session-Token:
+              schema:
+                type: string
+        '400':
+          description: Invalid credentials or request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── OIDC ─────────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/login/flows/{flowId}/methods/oidc:
+    post:
+      operationId: initiateOIDC
+      tags: [oidc]
+      summary: Initiate OIDC login for an existing flow
+      description: |
+        Advances the login flow into the OIDC redirect phase. The server
+        generates a nonce and PKCE code verifier, persists them in the flow,
+        and returns the authorization URL.
+
+        The client should redirect the browser to `redirect_to`.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the tenant SSO provider to use.
+      responses:
+        '200':
+          description: Authorization URL ready for browser redirect.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [redirect_to]
+                properties:
+                  redirect_to:
+                    type: string
+                    format: uri
+                    description: OIDC provider authorization endpoint with all required parameters.
+                    example: https://accounts.google.com/o/oauth2/auth?client_id=...
+        '400':
+          description: Invalid provider or flow state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/self-service/login/flows/oidc/callback:
+    get:
+      operationId: handleOIDCCallback
+      tags: [oidc]
+      summary: OIDC authorization code callback
+      description: |
+        The OIDC provider redirects the browser here after the user
+        authenticates. The server exchanges the code, verifies the `id_token`,
+        and either:
+
+        - Logs in an existing identity, or
+        - JIT-provisions a new identity (sets `is_new: true`).
+
+        The `redirect_uri` registered with the OIDC provider must point to
+        this endpoint.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Equals the login flow ID — used to look up stored OIDC state.
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: OIDC authorization code.
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Error code returned by the OIDC provider on failure.
+        - name: error_description
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authentication successful. Session issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SessionCreated'
+                  - type: object
+                    properties:
+                      is_new:
+                        type: boolean
+                        description: True when the identity was just JIT-provisioned.
+        '400':
+          description: OIDC error, invalid state/code, or nonce mismatch.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                      error_description:
+                        type: string
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Registration ──────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/registration/flows:
+    post:
+      operationId: initRegistrationFlow
+      tags: [registration]
+      summary: Initialise a registration flow
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Registration flow initialised.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '401':
+          description: Tenant not resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error (including registration disabled).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/self-service/registration/flows/{flowId}:
+    get:
+      operationId: getRegistrationFlow
+      tags: [registration]
+      summary: Get a registration flow
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      responses:
+        '200':
+          description: Registration flow returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: submitRegistrationFlow
+      tags: [registration]
+      summary: Submit registration data
+      description: |
+        Creates a new identity and credential. The response depends on the
+        tenant's `require_verification` policy:
+
+        - **Completed** — identity is immediately active; session is issued.
+        - **Verification pending** — identity is created in `pending_verification`
+          state. A verification flow is created and the `verification_token` is
+          returned (in production, delivered by email only).
+
+        ### Password registration
+        ```json
+        {
+          "method": "password",
+          "traits.email": "alice@example.com",
+          "password": "s3cret"
+        }
+        ```
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  type: string
+                  example: password
+                'traits.email':
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: Registration successful or verification required.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionCreated'
+                  - description: Email verification required.
+                    type: object
+                    required: [flow, identity_id, verification_pending, verification_flow_id, verification_token]
+                    properties:
+                      flow:
+                        $ref: '#/components/schemas/FlowResponse'
+                      identity_id:
+                        type: string
+                        format: uuid
+                      verification_pending:
+                        type: boolean
+                        example: true
+                      verification_flow_id:
+                        type: string
+                        format: uuid
+                      verification_token:
+                        type: string
+                        description: |
+                          Plaintext token for testing without email infrastructure.
+                          In production this is delivered by email only.
+        '400':
+          description: Validation error or duplicate identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Verification ──────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/verification/flows/{flowId}:
+    get:
+      operationId: getVerificationFlow
+      tags: [verification]
+      summary: Get a verification flow, or verify via email link token
+      description: |
+        Without `?token=`: returns the flow state.
+
+        With `?token=<tok>` (email link click): verifies the token, activates
+        the identity, and returns `{"state": "success"}`.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Plaintext verification token from the email link.
+      responses:
+        '200':
+          description: Flow returned, or token verified successfully.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FlowResponse'
+                  - type: object
+                    properties:
+                      state:
+                        type: string
+                        enum: [success]
+        '400':
+          description: Invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Verification link expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: submitVerificationFlow
+      tags: [verification]
+      summary: Submit a verification token (manual entry)
+      description: |
+        Alternative to the email link GET flow — accepts the token as a POST
+        body for clients that cannot perform link-based verification.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Verification successful.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                    enum: [success]
+        '400':
+          description: Invalid or expired token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Recovery ──────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/recovery/flows:
+    post:
+      operationId: initRecoveryFlow
+      tags: [recovery]
+      summary: Initialise an account recovery flow
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Recovery flow initialised (email input node included).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '500':
+          description: Internal error (including recovery disabled).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/self-service/recovery/flows/{flowId}:
+    get:
+      operationId: getRecoveryFlow
+      tags: [recovery]
+      summary: Get a recovery flow, or use a recovery link token
+      description: |
+        Without `?token=`: returns the flow state.
+
+        With `?token=<tok>` (recovery email link click): verifies the token,
+        activates the identity, issues a **15-minute recovery session**
+        (AMR = `["recovery"]`), and returns it. The client should immediately
+        redirect the user to the settings flow to set a new password.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Plaintext recovery token from the email link.
+      responses:
+        '200':
+          description: Flow returned, or recovery session issued.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FlowResponse'
+                  - description: Recovery session issued. Change password immediately.
+                    type: object
+                    required: [session_token, session_id, identity_id, expires_at, next]
+                    properties:
+                      session_token:
+                        type: string
+                      session_id:
+                        type: string
+                        format: uuid
+                      identity_id:
+                        type: string
+                        format: uuid
+                      expires_at:
+                        type: string
+                        format: date-time
+                      next:
+                        type: string
+                        enum: [set_password]
+        '400':
+          description: Invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Recovery link expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: submitRecoveryFlow
+      tags: [recovery]
+      summary: Submit an email address to trigger account recovery
+      description: |
+        Looks up the identity by email. Always returns success to prevent
+        user enumeration — if the email is not found the response is
+        identical to the success case.
+
+        The recovery token is returned in the response for testing without
+        email infrastructure. In production it is delivered by email only.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                method:
+                  type: string
+                  enum: [link]
+                  default: link
+      responses:
+        '200':
+          description: Recovery initiated (email sent if account exists).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state, recovery_token]
+                properties:
+                  state:
+                    type: string
+                    enum: [pending_link]
+                  recovery_token:
+                    type: string
+                    description: |
+                      Plaintext token for testing. In production delivered by email only.
+        '400':
+          description: Invalid request or recovery disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Settings ──────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/self-service/settings/flows:
+    post:
+      operationId: initSettingsFlow
+      tags: [settings]
+      summary: Initialise a settings flow (requires authentication)
+      description: |
+        Creates a settings flow bound to the authenticated identity. The flow
+        UI is pre-populated with the identity's current traits.
+      security:
+        - sessionToken: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Settings flow initialised.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '401':
+          description: No valid session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/self-service/settings/flows/{flowId}:
+    get:
+      operationId: getSettingsFlow
+      tags: [settings]
+      summary: Get a settings flow
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      responses:
+        '200':
+          description: Settings flow returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: submitSettingsFlow
+      tags: [settings]
+      summary: Submit a settings change (requires authentication)
+      description: |
+        Applies a profile or credential change for the authenticated identity.
+        The flow must have been created by the same session.
+
+        ### Update profile traits
+        ```json
+        {"method": "profile", "traits.email": "new@example.com", "traits.name": "Alice"}
+        ```
+
+        ### Change password
+        ```json
+        {"method": "password", "password": "new-s3cret"}
+        ```
+      security:
+        - sessionToken: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/flowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  type: string
+                  enum: [profile, password]
+                'traits.email':
+                  type: string
+                  format: email
+                  description: Used when method=profile.
+                password:
+                  type: string
+                  format: password
+                  description: New password. Used when method=password.
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: Settings change applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                    enum: [success]
+        '400':
+          description: Validation error or wrong identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: No valid session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Flow not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Flow expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Sessions ──────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/sessions/whoami:
+    get:
+      operationId: whoami
+      tags: [sessions]
+      summary: Introspect the current session
+      security:
+        - sessionToken: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Session is valid. Identity information returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: No token provided, or session is invalid / revoked / expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      operationId: logout
+      tags: [sessions]
+      summary: Revoke the current session (logout)
+      security:
+        - sessionToken: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '204':
+          description: Session revoked.
+        '401':
+          description: No valid session token provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── SSO admin ─────────────────────────────────────────────────────────────
+
+  /t/{tenant-slug}/admin/sso/providers:
+    post:
+      operationId: createSSOProvider
+      tags: [sso-admin]
+      summary: Create an SSO provider
+      description: |
+        Adds an OIDC or SAML provider to the tenant. The provider is enabled
+        by default and immediately visible in login flow UI nodes.
+
+        **Security note:** These endpoints have no built-in authentication.
+        They must be protected by an admin auth layer (e.g. API key gateway,
+        internal network policy) in production.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SSOProviderCreate'
+      responses:
+        '201':
+          description: SSO provider created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSOProvider'
+        '400':
+          description: Invalid type, provider, or config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      operationId: listSSOProviders
+      tags: [sso-admin]
+      summary: List SSO providers for the tenant
+      description: Config fields (including client secrets) are never returned.
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+      responses:
+        '200':
+          description: Provider list returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SSOProvider'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/admin/sso/providers/{providerId}:
+    get:
+      operationId: getSSOProvider
+      tags: [sso-admin]
+      summary: Get a single SSO provider
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/providerId'
+      responses:
+        '200':
+          description: Provider returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSOProvider'
+        '400':
+          description: Invalid provider ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Provider not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      operationId: deleteSSOProvider
+      tags: [sso-admin]
+      summary: Delete an SSO provider
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/providerId'
+      responses:
+        '204':
+          description: Provider deleted.
+        '404':
+          description: Provider not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /t/{tenant-slug}/admin/sso/providers/{providerId}/enabled:
+    patch:
+      operationId: setSSOProviderEnabled
+      tags: [sso-admin]
+      summary: Enable or disable an SSO provider
+      description: |
+        Disabling a provider hides it from login flow UI nodes immediately
+        (the `ListByType` query filters `enabled = true`).
+      parameters:
+        - $ref: '#/components/parameters/tenantSlug'
+        - $ref: '#/components/parameters/providerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '204':
+          description: Provider updated.
+        '400':
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Provider not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
