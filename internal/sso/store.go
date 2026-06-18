@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/enterprise-idp/idpd/internal/dbutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,12 +17,12 @@ var ErrNotFound = errors.New("sso provider not found")
 
 // Store provides DB-backed access to tenant_sso_providers.
 type Store struct {
-	pool *pgxpool.Pool
+	pool dbutil.Querier
 }
 
 // NewStore constructs a Store.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: dbutil.Wrap(pool)}
 }
 
 // Create inserts a new SSO provider row.

@@ -10,7 +10,6 @@ import (
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
-	"github.com/enterprise-idp/idpd/internal/flow/verification"
 	"github.com/enterprise-idp/idpd/internal/identity"
 	"github.com/enterprise-idp/idpd/internal/policy"
 	"github.com/enterprise-idp/idpd/internal/schema"
@@ -19,24 +18,47 @@ import (
 
 const flowTTL = 30 * time.Minute
 
+type flowStorer interface {
+	Create(ctx context.Context, tenantID uuid.UUID, flowType flow.Type, ui flow.UI, expiresAt time.Time) (*flow.Flow, error)
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+}
+type policyGetter interface {
+	Get(ctx context.Context, tenantID uuid.UUID) (*policy.FlowPolicy, error)
+}
+type identityStorer interface {
+	GetByIdentifier(ctx context.Context, tenantID uuid.UUID, credType, identifier string) (*identity.Credential, error)
+	CreateIdentity(ctx context.Context, tenantID, schemaID uuid.UUID, traits json.RawMessage, state string) (*identity.Identity, error)
+	CreateCredential(ctx context.Context, tenantID, identityID uuid.UUID, credType string, identifiers []string, config json.RawMessage) (*identity.Credential, error)
+}
+type schemaEnsurer interface {
+	EnsureDefault(ctx context.Context, tenantID uuid.UUID) (*schema.Schema, error)
+}
+type authnReg interface {
+	Get(id string) (authenticator.Authenticator, error)
+}
+type verificationIniter interface {
+	InitFlow(ctx context.Context, tenantID, identityID uuid.UUID) (*flow.Flow, string, error)
+}
+
 // Engine drives the registration self-service flow.
 type Engine struct {
-	flows      *flow.Store
-	policies   *policy.Store
-	identities *identity.Store
-	schemas    *schema.Store
-	authn      *authnregistry.Registry
-	verif      *verification.Engine
+	flows      flowStorer
+	policies   policyGetter
+	identities identityStorer
+	schemas    schemaEnsurer
+	authn      authnReg
+	verif      verificationIniter
 }
 
 // New constructs a registration Engine.
 func New(
-	flows *flow.Store,
-	policies *policy.Store,
-	identities *identity.Store,
-	schemas *schema.Store,
-	authn *authnregistry.Registry,
-	verif *verification.Engine,
+	flows flowStorer,
+	policies policyGetter,
+	identities identityStorer,
+	schemas schemaEnsurer,
+	authn authnReg,
+	verif verificationIniter,
 ) *Engine {
 	return &Engine{
 		flows:      flows,

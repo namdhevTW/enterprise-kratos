@@ -1,6 +1,7 @@
 package sso
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,14 +11,22 @@ import (
 	"github.com/google/uuid"
 )
 
+type ssoStore interface {
+	Create(ctx context.Context, tenantID uuid.UUID, typ, provider string, config json.RawMessage) (*Provider, error)
+	Get(ctx context.Context, tenantID, providerID uuid.UUID) (*Provider, error)
+	List(ctx context.Context, tenantID uuid.UUID) ([]*Provider, error)
+	Delete(ctx context.Context, tenantID, providerID uuid.UUID) error
+	SetEnabled(ctx context.Context, tenantID, providerID uuid.UUID, enabled bool) error
+}
+
 // Handler exposes admin CRUD endpoints for SSO providers.
 // NOTE: In production these routes must be protected by an admin auth layer.
 type Handler struct {
-	store *Store
+	store ssoStore
 }
 
 // NewHandler creates a Handler backed by store.
-func NewHandler(store *Store) *Handler {
+func NewHandler(store ssoStore) *Handler {
 	return &Handler{store: store}
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,15 +9,21 @@ import (
 
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
+
+type sessionStore interface {
+	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*Session, error)
+	RevokeByToken(ctx context.Context, tenantID uuid.UUID, token string) error
+}
 
 // Handler exposes session endpoints over HTTP.
 type Handler struct {
-	store *Store
+	store sessionStore
 }
 
 // NewHandler creates a Handler backed by store.
-func NewHandler(store *Store) *Handler {
+func NewHandler(store sessionStore) *Handler {
 	return &Handler{store: store}
 }
 

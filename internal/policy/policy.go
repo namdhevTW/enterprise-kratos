@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/enterprise-idp/idpd/internal/dbutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -73,12 +74,12 @@ func Default() *FlowPolicy {
 
 // Store provides DB-backed access to tenant_flow_policies.
 type Store struct {
-	pool *pgxpool.Pool
+	pool dbutil.Querier
 }
 
 // NewStore constructs a Store.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: dbutil.Wrap(pool)}
 }
 
 // Get returns the FlowPolicy for tenantID, falling back to Default() when no row exists.

@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,13 +12,18 @@ import (
 	"github.com/google/uuid"
 )
 
+type oidcEngine interface {
+	InitiateLogin(ctx context.Context, tenantID, flowID, providerID uuid.UUID) (string, error)
+	HandleCallback(ctx context.Context, tenantID uuid.UUID, state, code string) (*CallbackResult, error)
+}
+
 // Handler exposes the OIDC initiate and callback endpoints over HTTP.
 type Handler struct {
-	engine *Engine
+	engine oidcEngine
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine) *Handler {
+func NewHandler(engine oidcEngine) *Handler {
 	return &Handler{engine: engine}
 }
 

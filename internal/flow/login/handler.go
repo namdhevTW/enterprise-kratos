@@ -1,10 +1,12 @@
 package login
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	"github.com/enterprise-idp/idpd/internal/flow"
@@ -15,16 +17,25 @@ import (
 	"github.com/google/uuid"
 )
 
+type loginEngine interface {
+	InitFlow(ctx context.Context, tenantID uuid.UUID) (*flow.Flow, error)
+	GetFlow(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	SubmitFlow(ctx context.Context, tenantID, flowID uuid.UUID, method string, values map[string]string) (*SubmitResult, error)
+}
+type sessionIssuer interface {
+	Create(ctx context.Context, tenantID, identityID uuid.UUID, aal string, amr []string, ttl time.Duration) (*session.Session, error)
+}
+
 // Handler exposes the login Engine over HTTP.
 type Handler struct {
-	engine   *Engine
-	sessions *session.Store
+	engine   loginEngine
+	sessions sessionIssuer
 	hydra    *hydra.Client // nil when Hydra integration is not configured
 }
 
 // NewHandler creates a Handler backed by engine.
 // hydraClient may be nil when the Hydra integration is not configured.
-func NewHandler(engine *Engine, sessions *session.Store, hydraClient *hydra.Client) *Handler {
+func NewHandler(engine loginEngine, sessions sessionIssuer, hydraClient *hydra.Client) *Handler {
 	return &Handler{engine: engine, sessions: sessions, hydra: hydraClient}
 }
 

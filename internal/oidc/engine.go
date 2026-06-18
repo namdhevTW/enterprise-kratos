@@ -29,14 +29,38 @@ type CallbackResult struct {
 	IsNew      bool // true when the identity was just provisioned (JIT)
 }
 
+// Store interfaces used by the OIDC Engine (same duck-typing pattern as flow engines).
+type oidcProviderGetter interface {
+	Get(ctx context.Context, tenantID, providerID uuid.UUID) (*sso.Provider, error)
+}
+type oidcFlowStorer interface {
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+}
+type oidcIdentityStorer interface {
+	GetByIdentifier(ctx context.Context, tenantID uuid.UUID, credType, identifier string) (*identity.Credential, error)
+	GetIdentity(ctx context.Context, tenantID, identityID uuid.UUID) (*identity.Identity, error)
+	CreateIdentity(ctx context.Context, tenantID, schemaID uuid.UUID, traits json.RawMessage, state string) (*identity.Identity, error)
+	CreateCredential(ctx context.Context, tenantID, identityID uuid.UUID, credType string, identifiers []string, config json.RawMessage) (*identity.Credential, error)
+}
+type oidcSchemaEnsurer interface {
+	EnsureDefault(ctx context.Context, tenantID uuid.UUID) (*schema.Schema, error)
+}
+type oidcSessionCreator interface {
+	Create(ctx context.Context, tenantID, identityID uuid.UUID, aal string, amr []string, ttl time.Duration) (*session.Session, error)
+}
+type oidcPolicyGetter interface {
+	Get(ctx context.Context, tenantID uuid.UUID) (*policy.FlowPolicy, error)
+}
+
 // Engine drives the OIDC redirect + callback flow.
 type Engine struct {
-	providers  *sso.Store
-	flows      *flow.Store
-	identities *identity.Store
-	schemas    *schema.Store
-	sessions   *session.Store
-	policies   *policy.Store
+	providers  oidcProviderGetter
+	flows      oidcFlowStorer
+	identities oidcIdentityStorer
+	schemas    oidcSchemaEnsurer
+	sessions   oidcSessionCreator
+	policies   oidcPolicyGetter
 
 	// providerCache caches go-oidc Provider instances keyed by issuer URL.
 	// Creating a Provider fetches the discovery document (network call) so we
@@ -47,12 +71,12 @@ type Engine struct {
 
 // New constructs an OIDC Engine.
 func New(
-	providers *sso.Store,
-	flows *flow.Store,
-	identities *identity.Store,
-	schemas *schema.Store,
-	sessions *session.Store,
-	policies *policy.Store,
+	providers oidcProviderGetter,
+	flows oidcFlowStorer,
+	identities oidcIdentityStorer,
+	schemas oidcSchemaEnsurer,
+	sessions oidcSessionCreator,
+	policies oidcPolicyGetter,
 ) *Engine {
 	return &Engine{
 		providers:     providers,

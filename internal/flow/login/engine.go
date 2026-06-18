@@ -16,16 +16,36 @@ import (
 
 const flowTTL = 30 * time.Minute
 
+// Store/registry interfaces used by the Engine.
+// The concrete *flow.Store, *policy.Store, *identity.Store, and
+// *authnregistry.Registry all satisfy these interfaces, so main.go needs
+// no changes.
+type flowStorer interface {
+	Create(ctx context.Context, tenantID uuid.UUID, flowType flow.Type, ui flow.UI, expiresAt time.Time) (*flow.Flow, error)
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+}
+type policyGetter interface {
+	Get(ctx context.Context, tenantID uuid.UUID) (*policy.FlowPolicy, error)
+}
+type credReader interface {
+	GetByIdentifier(ctx context.Context, tenantID uuid.UUID, credType, identifier string) (*identity.Credential, error)
+	GetByIdentityAndType(ctx context.Context, tenantID, identityID uuid.UUID, credType string) (*identity.Credential, error)
+}
+type authnReg interface {
+	Get(id string) (authenticator.Authenticator, error)
+}
+
 // Engine drives the login self-service flow.
 type Engine struct {
-	flows      *flow.Store
-	policies   *policy.Store
-	identities *identity.Store
-	authn      *authnregistry.Registry
+	flows      flowStorer
+	policies   policyGetter
+	identities credReader
+	authn      authnReg
 }
 
 // New constructs a login Engine.
-func New(flows *flow.Store, policies *policy.Store, identities *identity.Store, authn *authnregistry.Registry) *Engine {
+func New(flows flowStorer, policies policyGetter, identities credReader, authn authnReg) *Engine {
 	return &Engine{
 		flows:      flows,
 		policies:   policies,

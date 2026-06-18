@@ -7,20 +7,25 @@ import (
 
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	"github.com/enterprise-idp/idpd/internal/sso"
+	"github.com/google/uuid"
 )
 
 const ID = "oidc"
+
+type providerLister interface {
+	ListByType(ctx context.Context, tenantID uuid.UUID, typ string) ([]*sso.Provider, error)
+}
 
 // Adapter implements authenticator.Authenticator for per-tenant OIDC providers.
 // Its StartFlow renders one button node per enabled OIDC provider for the tenant.
 // CompleteFlow is intentionally not supported — OIDC completion goes through the
 // dedicated callback handler in internal/oidc, not through the standard flow engine.
 type Adapter struct {
-	providers *sso.Store
+	providers providerLister
 }
 
 // New returns a new OIDC Adapter backed by the given SSO store.
-func New(providers *sso.Store) *Adapter {
+func New(providers providerLister) *Adapter {
 	return &Adapter{providers: providers}
 }
 

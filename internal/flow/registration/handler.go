@@ -1,10 +1,12 @@
 package registration
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	"github.com/enterprise-idp/idpd/internal/flow"
@@ -14,14 +16,23 @@ import (
 	"github.com/google/uuid"
 )
 
+type registrationEngine interface {
+	InitFlow(ctx context.Context, tenantID uuid.UUID) (*flow.Flow, error)
+	GetFlow(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	SubmitFlow(ctx context.Context, tenantID, flowID uuid.UUID, method string, values map[string]string) (*SubmitResult, error)
+}
+type sessionIssuer interface {
+	Create(ctx context.Context, tenantID, identityID uuid.UUID, aal string, amr []string, ttl time.Duration) (*session.Session, error)
+}
+
 // Handler exposes the registration Engine over HTTP.
 type Handler struct {
-	engine   *Engine
-	sessions *session.Store
+	engine   registrationEngine
+	sessions sessionIssuer
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine, sessions *session.Store) *Handler {
+func NewHandler(engine registrationEngine, sessions sessionIssuer) *Handler {
 	return &Handler{engine: engine, sessions: sessions}
 }
 

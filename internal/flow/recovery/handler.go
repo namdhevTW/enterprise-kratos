@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,18 +9,26 @@ import (
 
 	"github.com/enterprise-idp/idpd/internal/authenticator"
 	"github.com/enterprise-idp/idpd/internal/flow"
+	"github.com/enterprise-idp/idpd/internal/session"
 	internaltenant "github.com/enterprise-idp/idpd/internal/tenant"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
+type recoveryEngine interface {
+	InitFlow(ctx context.Context, tenantID uuid.UUID) (*flow.Flow, error)
+	GetFlow(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	RequestRecovery(ctx context.Context, tenantID, flowID uuid.UUID, email string) (string, error)
+	UseToken(ctx context.Context, tenantID, flowID uuid.UUID, token string) (*session.Session, uuid.UUID, error)
+}
+
 // Handler exposes the recovery Engine over HTTP.
 type Handler struct {
-	engine *Engine
+	engine recoveryEngine
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine) *Handler {
+func NewHandler(engine recoveryEngine) *Handler {
 	return &Handler{engine: engine}
 }
 

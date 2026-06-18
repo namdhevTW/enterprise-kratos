@@ -16,15 +16,30 @@ import (
 
 const flowTTL = 15 * time.Minute
 
+type flowStorer interface {
+	Create(ctx context.Context, tenantID uuid.UUID, flowType flow.Type, ui flow.UI, expiresAt time.Time) (*flow.Flow, error)
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+}
+type identityManager interface {
+	GetIdentity(ctx context.Context, tenantID, identityID uuid.UUID) (*identity.Identity, error)
+	UpdateTraits(ctx context.Context, tenantID, identityID uuid.UUID, traits json.RawMessage) error
+	GetByIdentityAndType(ctx context.Context, tenantID, identityID uuid.UUID, credType string) (*identity.Credential, error)
+	UpsertCredential(ctx context.Context, tenantID, identityID uuid.UUID, credType string, identifiers []string, config json.RawMessage) error
+}
+type authnReg interface {
+	Get(id string) (authenticator.Authenticator, error)
+}
+
 // Engine drives the settings self-service flow for authenticated users.
 type Engine struct {
-	flows      *flow.Store
-	identities *identity.Store
-	authn      *authnregistry.Registry
+	flows      flowStorer
+	identities identityManager
+	authn      authnReg
 }
 
 // New constructs a settings Engine.
-func New(flows *flow.Store, identities *identity.Store, authn *authnregistry.Registry) *Engine {
+func New(flows flowStorer, identities identityManager, authn authnReg) *Engine {
 	return &Engine{flows: flows, identities: identities, authn: authn}
 }
 

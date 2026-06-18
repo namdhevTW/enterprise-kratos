@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/enterprise-idp/idpd/internal/dbutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,12 +21,12 @@ var ErrExpired = errors.New("flow expired")
 
 // Store provides DB-backed access to self_service_flows.
 type Store struct {
-	pool *pgxpool.Pool
+	pool dbutil.Querier
 }
 
 // NewStore constructs a Store.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: dbutil.Wrap(pool)}
 }
 
 // Create inserts a new flow and returns the persisted row.

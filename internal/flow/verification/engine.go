@@ -16,14 +16,24 @@ import (
 
 const flowTTL = 1 * time.Hour
 
+type flowStorer interface {
+	Create(ctx context.Context, tenantID uuid.UUID, flowType flow.Type, ui flow.UI, expiresAt time.Time) (*flow.Flow, error)
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+	UpdateState(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State) error
+}
+type identityActivator interface {
+	UpdateIdentityState(ctx context.Context, tenantID, identityID uuid.UUID, state string) error
+}
+
 // Engine drives the email-verification self-service flow.
 type Engine struct {
-	flows      *flow.Store
-	identities *identity.Store
+	flows      flowStorer
+	identities identityActivator
 }
 
 // New constructs a verification Engine.
-func New(flows *flow.Store, identities *identity.Store) *Engine {
+func New(flows flowStorer, identities identityActivator) *Engine {
 	return &Engine{flows: flows, identities: identities}
 }
 

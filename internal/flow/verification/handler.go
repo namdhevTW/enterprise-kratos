@@ -1,6 +1,7 @@
 package verification
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +13,18 @@ import (
 	"github.com/google/uuid"
 )
 
+type verificationEngine interface {
+	GetFlow(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	SubmitFlow(ctx context.Context, tenantID, flowID uuid.UUID, token string) error
+}
+
 // Handler exposes the verification Engine over HTTP.
 type Handler struct {
-	engine *Engine
+	engine verificationEngine
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine) *Handler {
+func NewHandler(engine verificationEngine) *Handler {
 	return &Handler{engine: engine}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/enterprise-idp/idpd/internal/dbutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,13 +17,13 @@ var ErrNotFound = errors.New("tenant not found")
 
 // Store is a pgx-backed implementation of Repository.
 type Store struct {
-	pool *pgxpool.Pool
+	pool dbutil.Querier
 }
 
 // NewStore constructs a Store from an existing pgxpool.Pool. The caller is
 // responsible for the pool lifecycle (Close).
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: dbutil.Wrap(pool)}
 }
 
 const sqlGetBySlug = `

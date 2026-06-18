@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,14 +16,23 @@ import (
 	"github.com/google/uuid"
 )
 
+type settingsEngine interface {
+	InitFlow(ctx context.Context, tenantID, identityID uuid.UUID) (*flow.Flow, error)
+	GetFlow(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	SubmitFlow(ctx context.Context, tenantID, flowID, identityID uuid.UUID, method string, values map[string]string) error
+}
+type sessionReader interface {
+	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*session.Session, error)
+}
+
 // Handler exposes the settings Engine over HTTP.
 type Handler struct {
-	engine   *Engine
-	sessions *session.Store
+	engine   settingsEngine
+	sessions sessionReader
 }
 
 // NewHandler creates a Handler backed by engine.
-func NewHandler(engine *Engine, sessions *session.Store) *Handler {
+func NewHandler(engine settingsEngine, sessions sessionReader) *Handler {
 	return &Handler{engine: engine, sessions: sessions}
 }
 

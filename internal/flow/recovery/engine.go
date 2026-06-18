@@ -22,16 +22,33 @@ const (
 	recoverySessionTTL = 15 * time.Minute // short-lived; forces password change
 )
 
+type flowStorer interface {
+	Create(ctx context.Context, tenantID uuid.UUID, flowType flow.Type, ui flow.UI, expiresAt time.Time) (*flow.Flow, error)
+	Get(ctx context.Context, tenantID, flowID uuid.UUID) (*flow.Flow, error)
+	Update(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State, identityID *uuid.UUID, ui flow.UI) error
+	UpdateState(ctx context.Context, tenantID, flowID uuid.UUID, state flow.State) error
+}
+type policyGetter interface {
+	Get(ctx context.Context, tenantID uuid.UUID) (*policy.FlowPolicy, error)
+}
+type identityFinder interface {
+	GetIdentityIDByIdentifier(ctx context.Context, tenantID uuid.UUID, identifier string) (uuid.UUID, error)
+	UpdateIdentityState(ctx context.Context, tenantID, identityID uuid.UUID, state string) error
+}
+type sessionCreator interface {
+	Create(ctx context.Context, tenantID, identityID uuid.UUID, aal string, amr []string, ttl time.Duration) (*session.Session, error)
+}
+
 // Engine drives the account recovery self-service flow.
 type Engine struct {
-	flows      *flow.Store
-	policies   *policy.Store
-	identities *identity.Store
-	sessions   *session.Store
+	flows      flowStorer
+	policies   policyGetter
+	identities identityFinder
+	sessions   sessionCreator
 }
 
 // New constructs a recovery Engine.
-func New(flows *flow.Store, policies *policy.Store, identities *identity.Store, sessions *session.Store) *Engine {
+func New(flows flowStorer, policies policyGetter, identities identityFinder, sessions sessionCreator) *Engine {
 	return &Engine{flows: flows, policies: policies, identities: identities, sessions: sessions}
 }
 
