@@ -13,8 +13,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/enterprise-idp/idpd/internal/authenticator"
 	oidcadapter "github.com/enterprise-idp/idpd/internal/authenticator/adapters/oidc"
 	"github.com/enterprise-idp/idpd/internal/authenticator/adapters/password"
+	"github.com/enterprise-idp/idpd/internal/authenticator/adapters/rest"
 	authnregistry "github.com/enterprise-idp/idpd/internal/authenticator/registry"
 	"github.com/enterprise-idp/idpd/internal/flow"
 	"github.com/enterprise-idp/idpd/internal/flow/login"
@@ -94,9 +96,24 @@ func main() {
 	authnReg := authnregistry.New()
 	authnReg.MustRegister(password.New())
 	authnReg.MustRegister(oidcadapter.New(ssoStore))
-	// REST adapters (TOTP, PassKey, OTP) are registered here when their
-	// base URLs are available from config. Example:
-	//   authnReg.MustRegister(rest.New("totp", authenticator.SecondFactor, os.Getenv("TOTP_SERVICE_URL"), nil))
+
+	// REST adapters — registered when their base URLs are set via env vars.
+	// LDAP is a FirstFactor; TOTP/OTP/PassKey are SecondFactor.
+	for _, cfg := range []struct {
+		envKey string
+		id     string
+		kind   authenticator.Type
+	}{
+		{"LDAP_SERVICE_URL",    "ldap",    authenticator.FirstFactor},
+		{"TOTP_SERVICE_URL",    "totp",    authenticator.SecondFactor},
+		{"OTP_SERVICE_URL",     "otp",     authenticator.SecondFactor},
+		{"PASSKEY_SERVICE_URL", "passkey", authenticator.SecondFactor},
+	} {
+		if url := os.Getenv(cfg.envKey); url != "" {
+			authnReg.MustRegister(rest.New(cfg.id, cfg.kind, url, nil))
+			slog.Info("REST adapter registered", "type", cfg.id, "url", url)
+		}
+	}
 	slog.Info("authenticator registry ready", "count", len(authnReg.All()))
 
 	// -------------------------------------------------------------------------
